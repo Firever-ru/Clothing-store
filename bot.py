@@ -1,3 +1,4 @@
+# bot.py
 import logging
 import sqlite3
 import asyncio
@@ -15,33 +16,7 @@ from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 
-#set
-
-API_TOKEN = ""          #token
-ADMIN_ID = ...                   #id admin
-SUPPORT_USERNAME = "@"          #support id
-CHANNEL_LINK = "https://t.me/"   #cannel
-
-ADMIN_PASSWORD = ""            #password admin panel
-ADMIN_SESSION_TTL_MINUTES = 
-
-REVIEWS_CHANNEL_USERNAME = "Username"         #username cannel reviews
-REVIEWS_CHANNEL = f"@Username"  #reviews
-REVIEWS_CHANNEL_LINK = f"https://t.me/"  #reviews channel
-
-CARD_NUMBER = ""
-CARD_NAME = "First Name Last name"
-
-#page ap
-ADMIN_ORDERS_PAGE_SIZE = 
-
-#rus status
-STATUS_WAIT = "Ожидание оплаты"
-STATUS_PAID = "Оплачен"
-STATUS_SENT = "Отправлен"
-STATUS_RECEIVED = "Получен"
-STATUS_DECLINED = "Отклонено"  
-
+from config import *
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
@@ -64,10 +39,10 @@ def init_db():
     cur.execute("""
     CREATE TABLE IF NOT EXISTS catalog (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        photo TEXT,            -- file_id фото в Telegram
-        description TEXT,      -- описание / название
-        price INTEGER,         -- цена в рублях
-        sizes TEXT             -- размеры через запятую, верхний регистр (S,M,L,XL / 42,44,...)
+        photo TEXT,
+        description TEXT,
+        price INTEGER,
+        sizes TEXT
     )
     """)
     cur.execute("""
@@ -78,31 +53,25 @@ def init_db():
         product_id INTEGER,
         size TEXT,
         status TEXT,
-        proof TEXT,            -- подпись к чеку (имя отправителя)
-        address TEXT,          -- адрес (CDEK/Почта)
-        track TEXT,            -- трек-код
-        received_date TEXT     -- дата подтверждения "Получен"
+        proof TEXT,
+        address TEXT,
+        track TEXT,
+        received_date TEXT,
+        delivery TEXT
     )
     """)
-
-    try:
-        cur.execute("ALTER TABLE orders ADD COLUMN delivery TEXT")
-    except sqlite3.OperationalError:
-        pass  
     conn.commit()
     conn.close()
 
 init_db()
 
-#menu
+# menu
 
 def get_main_menu():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add(KeyboardButton("Каталог одежды"))
     kb.add(KeyboardButton("Мои заказы"))
-    kb.add(KeyboardButton("Отзывы"), KeyboardButton("Написать отзыв"))
     kb.add(KeyboardButton("Связь с поддержкой"))
-    kb.add(KeyboardButton("Телеграм-канал"))
     return kb
 
 def get_admin_menu():
@@ -114,7 +83,7 @@ def get_admin_menu():
     kb.add(KeyboardButton("Очистить историю заказов"))
     return kb
 
-#fsm
+# fsm
 
 class AddProduct(StatesGroup):
     photo = State()
@@ -138,10 +107,7 @@ class TrackInput(StatesGroup):
 class AdminLogin(StatesGroup):
     waiting_for_password = State()
 
-class ReviewInput(StatesGroup):
-    waiting_for_review = State()
-
-#dr
+# db functions
 
 def db_conn():
     return sqlite3.connect("shop.db")
@@ -178,18 +144,50 @@ def normalize_sizes(text: str) -> str:
     return ",".join(parts) if parts else t
 
 def main_menu_text() -> str:
-    return "👋 Добро пожаловать в магазин *OkSEX*!\nВыберите действие ниже:"
+    return "Добро пожаловать в магазин одежды\nВыберите действие ниже:"
 
 def admin_only(message: types.Message) -> bool:
     return is_admin_authorized(message.from_user.id)
 
 async def guard_admin_cb(call: types.CallbackQuery) -> bool:
     if not is_admin_authorized(call.from_user.id):
-        await call.answer("⛔ Нет доступа. Введите /ap.", show_alert=True)
+        await call.answer("Нет доступа. Введите /ap.", show_alert=True)
         return False
     return True
 
-#command
+# catalog keyboard
+
+def catalog_keyboard(page: int, total: int, product_id: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("⬅️", callback_data=f"cat_prev_{page}"),
+        InlineKeyboardButton("➡️", callback_data=f"cat_next_{page}")
+    )
+    kb.add(InlineKeyboardButton("Заказать", callback_data=f"order_{product_id}"))
+    return kb
+
+def admin_catalog_keyboard(prod_id: int, page: int, total: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("Изменить описание", callback_data=f"editdesc_{prod_id}"))
+    kb.add(InlineKeyboardButton("Изменить цену", callback_data=f"editprice_{prod_id}"))
+    kb.add(InlineKeyboardButton("Изменить размеры", callback_data=f"editsize_{prod_id}"))
+    kb.add(InlineKeyboardButton("Удалить", callback_data=f"delask_{prod_id}"))
+    kb.row(
+        InlineKeyboardButton("⬅️", callback_data=f"aprev_{page}"),
+        InlineKeyboardButton("➡️", callback_data=f"anext_{page}")
+    )
+    return kb
+
+def order_admin_keyboard(order_id: int, status: str, username: str) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardMarkup()
+    if status == STATUS_PAID:
+        kb.add(InlineKeyboardButton("Отправлен", callback_data=f"sent_{order_id}"))
+    if status not in (STATUS_DECLINED, STATUS_RECEIVED, STATUS_CANCELLED):
+        kb.add(InlineKeyboardButton("Отменить", callback_data=f"cancel_{order_id}"))
+    kb.add(InlineKeyboardButton("Связаться", callback_data=f"contact_{order_id}"))
+    return kb
+
+# commands
 
 @dp.message_handler(commands=["start"])
 async def cmd_start(message: types.Message):
@@ -198,53 +196,31 @@ async def cmd_start(message: types.Message):
 @dp.message_handler(commands=["ap"])
 async def cmd_admin(message: types.Message):
     await AdminLogin.waiting_for_password.set()
-    await message.answer("🔒 Введите пароль админ‑панели:")
+    await message.answer("Введите пароль админ‑панели:")
 
 @dp.message_handler(state=AdminLogin.waiting_for_password, content_types=["text"])
 async def admin_check_password(message: types.Message, state: FSMContext):
     if message.text.strip() == ADMIN_PASSWORD:
         authorize_admin(message.from_user.id)
         await state.finish()
-        await message.answer("🔑 Доступ разрешён. Админ‑панель:", reply_markup=get_admin_menu())
+        await message.answer("Доступ разрешён. Админ‑панель:", reply_markup=get_admin_menu())
     else:
         await state.finish()
-        await message.answer("⛔ Неверный пароль.")
+        await message.answer("Неверный пароль.")
 
-#menu 
+# menu handlers
 
 @dp.message_handler(lambda m: m.text == "Связь с поддержкой")
 async def client_support(message: types.Message):
-    await message.answer(f"📞 Связь с владельцем: @{SUPPORT_USERNAME}")
+    await message.answer(f"Связь с владельцем: {SUPPORT_USERNAME}")
 
-@dp.message_handler(lambda m: m.text == "Телеграм-канал")
-async def client_channel(message: types.Message):
-    await message.answer(f"📢 Наш канал: {CHANNEL_LINK}")
-
-@dp.message_handler(lambda m: m.text == "Отзывы")
-async def client_reviews_link(message: types.Message):
-    await message.answer(f"📝 Отзывы: {REVIEWS_CHANNEL_LINK}")
-
-@dp.message_handler(lambda m: m.text == "Написать отзыв")
-async def client_write_review(message: types.Message):
-    await message.answer("✍️ Отправьте ваш отзыв одним сообщением (можно текст/фото/видео) — я перешлю его в наш канал.")
-    await ReviewInput.waiting_for_review.set()
-
-@dp.message_handler(state=ReviewInput.waiting_for_review, content_types=types.ContentTypes.ANY)
-async def client_review_forward(message: types.Message, state: FSMContext):
-    try:
-        await bot.forward_message(chat_id=REVIEWS_CHANNEL, from_chat_id=message.chat.id, message_id=message.message_id)
-        await message.answer("✅ Спасибо! Ваш отзыв отправлен в канал.")
-    except Exception as e:
-        await message.answer(f"❌ Не удалось отправить отзыв. Убедитесь, что бот добавлен админом в {REVIEWS_CHANNEL}. Ошибка: {e}")
-    await state.finish()
-
-#add
+# add product
 
 @dp.message_handler(lambda m: m.text == "Выложить одежду")
 async def add_product_start(message: types.Message):
     if not admin_only(message):
         return
-    await message.answer("📸 Отправьте *фото* товара с подписью (название/описание).", parse_mode="Markdown")
+    await message.answer("Отправьте *фото* товара с подписью (название/описание).", parse_mode="Markdown")
     await AddProduct.photo.set()
 
 @dp.message_handler(content_types=["photo"], state=AddProduct.photo)
@@ -252,13 +228,13 @@ async def add_product_photo(message: types.Message, state: FSMContext):
     photo_id = message.photo[-1].file_id
     description = message.caption if message.caption else "Без описания"
     await state.update_data(photo=photo_id, description=description)
-    await message.answer("💰 Теперь введите цену (только число):")
+    await message.answer("Введите цену (только число):")
     await AddProduct.price.set()
 
 @dp.message_handler(lambda m: m.text.isdigit(), state=AddProduct.price)
 async def add_product_price(message: types.Message, state: FSMContext):
     await state.update_data(price=int(message.text))
-    await message.answer("📏 Введите размеры *без пробелов*, через запятую (например: `S,M,L,XL`):", parse_mode="Markdown")
+    await message.answer("Введите размеры *без пробелов*, через запятую (например: `S,M,L,XL`):", parse_mode="Markdown")
     await AddProduct.sizes.set()
 
 @dp.message_handler(state=AddProduct.sizes)
@@ -274,30 +250,21 @@ async def add_product_sizes(message: types.Message, state: FSMContext):
     conn.commit()
     conn.close()
     await state.finish()
-    await message.answer("✅ Товар добавлен в каталог.", reply_markup=get_admin_menu())
+    await message.answer("Товар добавлен в каталог.", reply_markup=get_admin_menu())
 
-#catalog
-
-def catalog_keyboard(page: int, total: int, product_id: int) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardMarkup()
-    kb.row(
-        InlineKeyboardButton("⬅️", callback_data=f"cat_prev_{page}"),
-        InlineKeyboardButton("➡️", callback_data=f"cat_next_{page}")
-    )
-    kb.add(InlineKeyboardButton("🛒 Заказать", callback_data=f"order_{product_id}"))
-    return kb
+# catalog
 
 @dp.message_handler(lambda m: m.text == "Каталог одежды")
 async def show_catalog(message: types.Message):
     total = count_products()
     if total == 0:
-        await message.answer("📦 Каталог пуст. Загляните позже.")
+        await message.answer("Каталог пуст. Загляните позже.")
         return
     row = get_product_by_offset(0)
     prod_id, photo, desc, price, sizes = row
     await message.answer_photo(
         photo,
-        caption=f"{desc}\n\n💰 Цена: {price} руб.\n📏 Размеры: {sizes}",
+        caption=f"{desc}\n\nЦена: {price} руб.\nРазмеры: {sizes}",
         reply_markup=catalog_keyboard(0, total, prod_id)
     )
 
@@ -317,18 +284,18 @@ async def catalog_paginate(call: types.CallbackQuery):
     prod_id, photo, desc, price, sizes = row
     try:
         await call.message.edit_media(
-            InputMediaPhoto(photo, caption=f"{desc}\n\n💰 Цена: {price} руб.\n📏 Размеры: {sizes}")
+            InputMediaPhoto(photo, caption=f"{desc}\n\nЦена: {price} руб.\nРазмеры: {sizes}")
         )
         await call.message.edit_reply_markup(reply_markup=catalog_keyboard(new_page, total, prod_id))
     except Exception:
         await call.message.answer_photo(
             photo,
-            caption=f"{desc}\n\n💰 Цена: {price} руб.\n📏 Размеры: {sizes}",
+            caption=f"{desc}\n\nЦена: {price} руб.\nРазмеры: {sizes}",
             reply_markup=catalog_keyboard(new_page, total, prod_id)
         )
     await call.answer()
 
-#order
+# order
 
 @dp.callback_query_handler(lambda c: c.data.startswith("order_"))
 async def order_pick_size(call: types.CallbackQuery):
@@ -347,8 +314,8 @@ async def order_pick_size(call: types.CallbackQuery):
     for s in sizes:
         kb.add(InlineKeyboardButton(s, callback_data=f"choose_{product_id}_{s}"))
     await call.message.answer(
-        f"🧾 {desc}\n"
-        f"💰 Цена: {price} руб. (+ стоимость доставки, с вами свяжется менеджер в момент отправки)\n\n"
+        f"{desc}\n"
+        f"Цена: {price} руб. (+ стоимость доставки, с вами свяжется менеджер в момент отправки)\n\n"
         f"Выберите размер:",
         reply_markup=kb
     )
@@ -367,7 +334,6 @@ async def choose_size(call: types.CallbackQuery):
         return
     price, desc = row
 
-    
     cur.execute(
         "INSERT INTO orders (user_id, username, product_id, size, status) VALUES (?, ?, ?, ?, ?)",
         (call.from_user.id, call.from_user.username, int(product_id), size, STATUS_WAIT)
@@ -376,26 +342,24 @@ async def choose_size(call: types.CallbackQuery):
     conn.commit()
     conn.close()
 
-    
     kb_deliv = InlineKeyboardMarkup().row(
         InlineKeyboardButton("Почта России", callback_data=f"delivery_{order_id}_POST"),
         InlineKeyboardButton("CDEK (дороже)", callback_data=f"delivery_{order_id}_CDEK")
     )
 
     await call.message.answer(
-        f"🧾 Заказ №{order_id}\n"
+        f"Заказ №{order_id}\n"
         f"Товар: {desc}\nРазмер: {size}\n"
-        f"💰 Сумма к оплате: {price} руб. (+ стоимость доставки, с вами свяжется менеджер в момент отправки)\n\n"
+        f"Сумма к оплате: {price} руб. (+ стоимость доставки, с вами свяжется менеджер в момент отправки)\n\n"
         f"Оплатите по реквизитам:\n"
-        f"💳 Карта: {CARD_NUMBER}\n"
-        f"👤 Держатель: {CARD_NAME}\n\n"
+        f"Карта: {CARD_NUMBER}\n"
+        f"Держатель: {CARD_NAME}\n\n"
         f"После оплаты отправьте *СКРИНШОТ перевода* и *имя отправителя* одним сообщением (скриншот + подпись).\n\n"
         f"Выберите способ получения:",
         reply_markup=kb_deliv,
         parse_mode="Markdown"
     )
     await call.answer()
-
 
 @dp.callback_query_handler(lambda c: c.data.startswith("delivery_"))
 async def set_delivery(call: types.CallbackQuery):
@@ -412,7 +376,7 @@ async def set_delivery(call: types.CallbackQuery):
     user_id, status = row
     if call.from_user.id != user_id:
         conn.close()
-        await call.answer("⛔ Доступ запрещён.", show_alert=True)
+        await call.answer("Доступ запрещён.", show_alert=True)
         return
 
     cur.execute("UPDATE orders SET delivery=? WHERE id=?", (method, order_id))
@@ -422,16 +386,14 @@ async def set_delivery(call: types.CallbackQuery):
     human = "Почта России" if method == "POST" else "CDEK (дороже)"
     await call.answer(f"Выбрано: {human}")
 
-    
     if status == STATUS_PAID:
         client_state = dp.current_state(chat=user_id, user=user_id)
         await client_state.set_state(AddressInput.waiting_for_address.state)
         await client_state.update_data(order_id=order_id)
         if method == "CDEK":
-            await bot.send_message(user_id, "📍 Пожалуйста, отправьте *полный адрес отделения CDEK* (город, улица, дом) одним сообщением.", parse_mode="Markdown")
+            await bot.send_message(user_id, "Пожалуйста, отправьте *полный адрес отделения CDEK* (город, улица, дом) одним сообщением.", parse_mode="Markdown")
         else:
-            await bot.send_message(user_id, "📍 Пожалуйста, отправьте *ФИО, индекс и полный почтовый адрес* для доставки Почтой России одним сообщением.", parse_mode="Markdown")
-
+            await bot.send_message(user_id, "Пожалуйста, отправьте *ФИО, индекс и полный почтовый адрес* для доставки Почтой России одним сообщением.", parse_mode="Markdown")
 
 @dp.message_handler(content_types=["photo"])
 async def receive_payment_proof(message: types.Message):
@@ -444,7 +406,7 @@ async def receive_payment_proof(message: types.Message):
     row = cur.fetchone()
     if not row:
         conn.close()
-        return  
+        return
     order_id = row[0]
 
     proof_caption = message.caption if message.caption else "Без подписи"
@@ -452,19 +414,18 @@ async def receive_payment_proof(message: types.Message):
     conn.commit()
     conn.close()
 
-  
     kb = InlineKeyboardMarkup()
     kb.row(
-        InlineKeyboardButton("✅ Подтвердить оплату", callback_data=f"confirm_{order_id}"),
-        InlineKeyboardButton("❌ Отклонить", callback_data=f"decline_{order_id}")
+        InlineKeyboardButton("Подтвердить оплату", callback_data=f"confirm_{order_id}"),
+        InlineKeyboardButton("Отклонить", callback_data=f"decline_{order_id}")
     )
     await bot.send_photo(
         ADMIN_ID,
         message.photo[-1].file_id,
-        caption=f"💸 Новый платёж\nЗаказ №{order_id}\nОт @{message.from_user.username}\nКомментарий: {proof_caption}",
+        caption=f"Новый платёж\nЗаказ №{order_id}\nОт @{message.from_user.username}\nКомментарий: {proof_caption}",
         reply_markup=kb
     )
-    await message.answer("📩 Чек отправлен владельцу. Ожидайте подтверждения.")
+    await message.answer("Чек отправлен владельцу. Ожидайте подтверждения.")
 
 @dp.callback_query_handler(lambda c: c.data.startswith("confirm_") or c.data.startswith("decline_"))
 async def admin_confirm_or_decline(call: types.CallbackQuery):
@@ -487,9 +448,9 @@ async def admin_confirm_or_decline(call: types.CallbackQuery):
         cur.execute("UPDATE orders SET status=? WHERE id=?", (STATUS_DECLINED, order_id))
         conn.commit()
         conn.close()
-        await bot.send_message(user_id, "❌ Оплата отклонена. Вы вернулись к главному меню.", reply_markup=get_main_menu())
+        await bot.send_message(user_id, "Оплата отклонена. Вы вернулись к главному меню.", reply_markup=get_main_menu())
         try:
-            await call.message.edit_caption(call.message.caption + "\n\n❌ ОТКЛОНЕНО")
+            await call.message.edit_caption(call.message.caption + "\n\nОТКЛОНЕНО")
         except Exception:
             pass
         await call.answer("Оплата отклонена.")
@@ -509,7 +470,7 @@ async def admin_confirm_or_decline(call: types.CallbackQuery):
         )
         await bot.send_message(
             user_id,
-            "✅ Оплата подтверждена!\n\nВыберите, как получить заказ:",
+            "Оплата подтверждена!\n\nВыберите, как получить заказ:",
             reply_markup=kb_deliv
         )
     else:
@@ -519,13 +480,13 @@ async def admin_confirm_or_decline(call: types.CallbackQuery):
         if delivery == "CDEK":
             await bot.send_message(
                 user_id,
-                "✅ Оплата подтверждена!\nТеперь, пожалуйста, отправьте *полный адрес отделения CDEK* (город, улица, дом) одним сообщением.",
+                "Оплата подтверждена!\nТеперь, пожалуйста, отправьте *полный адрес отделения CDEK* (город, улица, дом) одним сообщением.",
                 parse_mode="Markdown"
             )
         else:
             await bot.send_message(
                 user_id,
-                "✅ Оплата подтверждена!\nТеперь, пожалуйста, отправьте *ФИО, индекс и полный почтовый адрес* для доставки Почтой России одним сообщением.",
+                "Оплата подтверждена!\nТеперь, пожалуйста, отправьте *ФИО, индекс и полный почтовый адрес* для доставки Почтой России одним сообщением.",
                 parse_mode="Markdown"
             )
 
@@ -552,11 +513,11 @@ async def receive_address(message: types.Message, state: FSMContext):
     conn.commit()
     conn.close()
 
-    await message.answer("📦 Адрес сохранён. Как только заказ будет отправлен — мы пришлём трек-код.")
-    await bot.send_message(ADMIN_ID, f"📦 Заказ №{order_id}\n🚚 Доставка: {'CDEK' if delivery=='CDEK' else 'Почта России' if delivery=='POST' else 'не выбрано'}\nАдрес клиента: {message.text.strip()}")
+    await message.answer("Адрес сохранён. Как только заказ будет отправлен — мы пришлём трек-код.")
+    await bot.send_message(ADMIN_ID, f"Заказ №{order_id}\nДоставка: {'CDEK' if delivery=='CDEK' else 'Почта России' if delivery=='POST' else 'не выбрано'}\nАдрес клиента: {message.text.strip()}")
     await state.finish()
 
-#my order
+# my orders
 
 @dp.message_handler(lambda m: m.text == "Мои заказы")
 async def my_orders(message: types.Message):
@@ -572,7 +533,7 @@ async def my_orders(message: types.Message):
     conn.close()
 
     if not orders:
-        await message.answer("🧾 У вас пока нет заказов.")
+        await message.answer("У вас пока нет заказов.")
         return
 
     for order_id, product_id, size, status, track, delivery in orders:
@@ -585,19 +546,19 @@ async def my_orders(message: types.Message):
 
         delivery_name = "CDEK" if delivery == "CDEK" else "Почта России" if delivery == "POST" else "не выбран"
         text = (
-            f"🧾 Заказ №{order_id}\n"
-            f"📦 {name}\n"
-            f"📏 Размер: {size}\n"
-            f"🚚 Доставка: {delivery_name}\n"
-            f"📌 Статус: {status}"
+            f"Заказ №{order_id}\n"
+            f"{name}\n"
+            f"Размер: {size}\n"
+            f"Доставка: {delivery_name}\n"
+            f"Статус: {status}"
         )
         if track:
-            text += f"\n📮 Трек-код: {track}"
+            text += f"\nТрек-код: {track}"
 
         kb = None
         if status == STATUS_SENT:
             kb = InlineKeyboardMarkup().add(
-                InlineKeyboardButton("✅ Заказ получен", callback_data=f"received_{order_id}")
+                InlineKeyboardButton("Заказ получен", callback_data=f"received_{order_id}")
             )
         await message.answer(text, reply_markup=kb)
 
@@ -612,23 +573,14 @@ async def mark_order_received(call: types.CallbackQuery):
     )
     conn.commit()
     conn.close()
-    await call.message.answer("🎉 Спасибо! Заказ отмечен как *получен*. Он исчезнет из истории через 2 дня.", parse_mode="Markdown")
+    await call.message.answer("Спасибо! Заказ отмечен как *получен*.", parse_mode="Markdown")
     try:
         await call.message.edit_reply_markup()
     except Exception:
         pass
     await call.answer()
 
-#order
-
-def order_admin_keyboard(order_id: int, status: str, username: str) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardMarkup()
-    if status == STATUS_PAID:
-        kb.add(InlineKeyboardButton("📮 Отправлен", callback_data=f"sent_{order_id}"))
-    if status not in (STATUS_DECLINED, STATUS_RECEIVED, STATUS_CANCELLED):
-        kb.add(InlineKeyboardButton("❌ Отменить", callback_data=f"cancel_{order_id}"))
-    kb.add(InlineKeyboardButton("📞 Связаться", callback_data=f"contact_{order_id}"))
-    return kb
+# admin orders
 
 @dp.message_handler(lambda m: m.text == "Заказы")
 async def admin_orders(message: types.Message):
@@ -648,7 +600,7 @@ async def admin_orders(message: types.Message):
     conn.close()
 
     if not rows:
-        await message.answer("📭 Оплаченных/отправленных заказов нет.")
+        await message.answer("Оплаченных/отправленных заказов нет.")
         return
 
     for order_id, user_id, username, product_id, size, status in rows:
@@ -658,7 +610,7 @@ async def admin_orders(message: types.Message):
         prod = cur.fetchone()
         conn.close()
         name = prod[0] if prod else f"Товар #{product_id}"
-        text = f"🧾 Заказ №{order_id}\n👤 @{username}\n📦 {name}\n📏 Размер: {size}\n📌 Статус: {status}"
+        text = f"🧾 Заказ №{order_id}\n👤 @{username}\n{name}\n📏 Размер: {size}\nСтатус: {status}"
         await message.answer(text, reply_markup=order_admin_keyboard(order_id, status, username))
 
 @dp.callback_query_handler(lambda c: c.data.startswith("sent_"))
@@ -670,7 +622,7 @@ async def admin_sent(call: types.CallbackQuery, state: FSMContext):
     await TrackInput.waiting_for_track.set()
     await state.update_data(order_id=order_id)
 
-    await call.message.answer(f"📮 Введите *трек-код* для заказа №{order_id}:", parse_mode="Markdown")
+    await call.message.answer(f"Введите *трек-код* для заказа №{order_id}:", parse_mode="Markdown")
     await call.answer()
 
 @dp.message_handler(state=TrackInput.waiting_for_track, content_types=["text"])
@@ -692,10 +644,10 @@ async def admin_save_track(message: types.Message, state: FSMContext):
 
     if row:
         user_id = row[0]
-        await bot.send_message(user_id, f"📦 Ваш заказ №{order_id} *отправлен*!\n📮 Трек-код: `{track}`",
+        await bot.send_message(user_id, f"Ваш заказ №{order_id} *отправлен*!\nТрек-код: `{track}`",
                                parse_mode="Markdown")
 
-    await message.answer("✅ Трек-код сохранён, клиент уведомлён.")
+    await message.answer("Трек-код сохранён, клиент уведомлён.")
     await state.finish()
 
 @dp.callback_query_handler(lambda c: c.data.startswith("contact_"))
@@ -709,9 +661,9 @@ async def admin_contact(call: types.CallbackQuery):
     row = cur.fetchone()
     conn.close()
     if row and row[0]:
-        await call.message.answer(f"📞 Связаться с клиентом: @{row[0]}")
+        await call.message.answer(f"Связаться с клиентом: @{row[0]}")
     else:
-        await call.message.answer("❌ У клиента нет username.")
+        await call.message.answer("У клиента нет username.")
     await call.answer()
 
 @dp.callback_query_handler(lambda c: c.data.startswith("cancel_"))
@@ -729,16 +681,17 @@ async def admin_cancel(call: types.CallbackQuery):
     conn.close()
 
     if row:
-        await bot.send_message(row[0], f"❌ Ваш заказ №{order_id} был *отменён* владельцем.", parse_mode="Markdown")
+        await bot.send_message(row[0], f"Ваш заказ №{order_id} был *отменён* владельцем.", parse_mode="Markdown")
     await call.message.answer("Заказ отменён.")
     await call.answer()
 
+# broadcast
 
 @dp.message_handler(lambda m: m.text == "Оповестить клиентов")
 async def start_broadcast(message: types.Message):
     if not admin_only(message):
         return
-    await message.answer("✍️ Введите текст рассылки:")
+    await message.answer("Введите текст рассылки:")
     await Broadcast.text.set()
 
 @dp.message_handler(state=Broadcast.text, content_types=["text"])
@@ -755,12 +708,14 @@ async def send_broadcast(message: types.Message, state: FSMContext):
     sent = 0
     for uid in users:
         try:
-            await bot.send_message(uid, f"📢 Оповещение:\n\n{text}")
+            await bot.send_message(uid, f"Оповещение:\n\n{text}")
             sent += 1
         except Exception:
             pass
-    await message.answer(f"✅ Рассылка завершена. Отправлено: {sent}.")
+    await message.answer(f"Рассылка завершена. Отправлено: {sent}.")
     await state.finish()
+
+# clear history
 
 @dp.message_handler(lambda m: m.text == "Очистить историю заказов")
 async def clear_history(message: types.Message):
@@ -774,18 +729,7 @@ async def clear_history(message: types.Message):
     conn.close()
     await message.answer(f"🗑 Удалено завершённых заказов: {deleted}")
 
-
-def admin_catalog_keyboard(prod_id: int, page: int, total: int) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("✏ Изменить описание", callback_data=f"editdesc_{prod_id}"))
-    kb.add(InlineKeyboardButton("💰 Изменить цену", callback_data=f"editprice_{prod_id}"))
-    kb.add(InlineKeyboardButton("📏 Изменить размеры", callback_data=f"editsize_{prod_id}"))
-    kb.add(InlineKeyboardButton("🗑 Удалить", callback_data=f"delask_{prod_id}"))
-    kb.row(
-        InlineKeyboardButton("⬅️", callback_data=f"aprev_{page}"),
-        InlineKeyboardButton("➡️", callback_data=f"anext_{page}")
-    )
-    return kb
+# admin catalog
 
 @dp.message_handler(lambda m: m.text == "Действующий каталог")
 async def admin_catalog(message: types.Message):
@@ -793,13 +737,13 @@ async def admin_catalog(message: types.Message):
         return
     total = count_products()
     if total == 0:
-        await message.answer("❌ Каталог пуст.")
+        await message.answer("Каталог пуст.")
         return
     row = get_product_by_offset(0)
     prod_id, photo, desc, price, sizes = row
     await message.answer_photo(
         photo,
-        caption=f"#{prod_id} {desc}\n💰 {price} руб.\n📏 {sizes}",
+        caption=f"#{prod_id} {desc}\n{price} руб.\n{sizes}",
         reply_markup=admin_catalog_keyboard(prod_id, 0, total)
     )
 
@@ -820,12 +764,12 @@ async def admin_catalog_paginate(call: types.CallbackQuery):
     row = get_product_by_offset(new_page)
     prod_id, photo, desc, price, sizes = row
     try:
-        await call.message.edit_media(InputMediaPhoto(photo, caption=f"#{prod_id} {desc}\n💰 {price} руб.\n📏 {sizes}"))
+        await call.message.edit_media(InputMediaPhoto(photo, caption=f"#{prod_id} {desc}\n{price} руб.\n{sizes}"))
         await call.message.edit_reply_markup(reply_markup=admin_catalog_keyboard(prod_id, new_page, total))
     except Exception:
         await call.message.answer_photo(
             photo,
-            caption=f"#{prod_id} {desc}\n💰 {price} руб.\n📏 {sizes}",
+            caption=f"#{prod_id} {desc}\n{price} руб.\n{sizes}",
             reply_markup=admin_catalog_keyboard(prod_id, new_page, total)
         )
     await call.answer()
@@ -853,7 +797,7 @@ async def edit_desc_save(message: types.Message, state: FSMContext):
     conn.commit()
     conn.close()
     await state.finish()
-    await message.answer("✅ Описание обновлено.")
+    await message.answer("Описание обновлено.")
 
 @dp.callback_query_handler(lambda c: c.data.startswith("editprice_"))
 async def edit_price_start(call: types.CallbackQuery, state: FSMContext):
@@ -861,7 +805,7 @@ async def edit_price_start(call: types.CallbackQuery, state: FSMContext):
         return
     prod_id = int(call.data.split("_")[1])
     await state.update_data(prod_id=prod_id)
-    await call.message.answer("💰 Введите новую цену (только число):")
+    await call.message.answer("Введите новую цену (только число):")
     await EditProduct.price.set()
     await call.answer()
 
@@ -871,7 +815,7 @@ async def edit_price_save(message: types.Message, state: FSMContext):
         await state.finish()
         return
     if not message.text.isdigit():
-        await message.answer("❌ Введите число, например: 2499")
+        await message.answer("Введите число, например: 2499")
         return
     data = await state.get_data()
     prod_id = data["prod_id"]
@@ -881,7 +825,7 @@ async def edit_price_save(message: types.Message, state: FSMContext):
     conn.commit()
     conn.close()
     await state.finish()
-    await message.answer("✅ Цена обновлена.")
+    await message.answer("Цена обновлена.")
 
 @dp.callback_query_handler(lambda c: c.data.startswith("editsize_"))
 async def edit_sizes_start(call: types.CallbackQuery, state: FSMContext):
@@ -889,7 +833,7 @@ async def edit_sizes_start(call: types.CallbackQuery, state: FSMContext):
         return
     prod_id = int(call.data.split("_")[1])
     await state.update_data(prod_id=prod_id)
-    await call.message.answer("📏 Введите новые размеры через запятую (например: S,M,L,XL):")
+    await call.message.answer("Введите новые размеры через запятую (например: S,M,L,XL):")
     await EditProduct.sizes.set()
     await call.answer()
 
@@ -907,7 +851,7 @@ async def edit_sizes_save(message: types.Message, state: FSMContext):
     conn.commit()
     conn.close()
     await state.finish()
-    await message.answer("✅ Размеры обновлены.")
+    await message.answer("Размеры обновлены.")
 
 @dp.callback_query_handler(lambda c: c.data.startswith("delask_"))
 async def delete_ask(call: types.CallbackQuery):
@@ -915,8 +859,8 @@ async def delete_ask(call: types.CallbackQuery):
         return
     prod_id = int(call.data.split("_")[1])
     kb = InlineKeyboardMarkup().row(
-        InlineKeyboardButton("✅ Да, удалить", callback_data=f"delyes_{prod_id}"),
-        InlineKeyboardButton("↩️ Отмена", callback_data=f"delno_{prod_id}")
+        InlineKeyboardButton("Да, удалить", callback_data=f"delyes_{prod_id}"),
+        InlineKeyboardButton("Отмена", callback_data=f"delno_{prod_id}")
     )
     await call.message.answer(f"Вы уверены, что хотите удалить товар #{prod_id}?", reply_markup=kb)
     await call.answer()
@@ -935,17 +879,16 @@ async def delete_do(call: types.CallbackQuery):
     cur.execute("DELETE FROM catalog WHERE id=?", (prod_id,))
     conn.commit()
     conn.close()
-    await call.message.answer(f"🗑 Товар #{prod_id} удалён.")
+    await call.message.answer(f"Товар #{prod_id} удалён.")
     await call.answer()
-
 
 @dp.message_handler(commands=["sql"])
 async def sql_command(message: types.Message):
     if not admin_only(message):
-        return await message.answer("⛔ Нет доступа. Введите /ap.")
+        return await message.answer("Нет доступа. Введите /ap.")
     query = message.get_args()
     if not query:
-        return await message.answer("❗ Использование: /sql SELECT * FROM orders;")
+        return await message.answer("Использование: /sql SELECT * FROM orders;")
     try:
         conn = db_conn()
         cur = conn.cursor()
@@ -953,56 +896,18 @@ async def sql_command(message: types.Message):
         if query.strip().upper().startswith("SELECT"):
             rows = cur.fetchall()
             if not rows:
-                await message.answer("📭 Пусто.")
+                await message.answer("Пусто.")
             else:
                 text = "\n".join(str(r) for r in rows[:20])
                 if len(rows) > 20:
                     text += f"\n… и ещё {len(rows) - 20} строк(и)"
-                await message.answer(f"📊 Результат:\n\n{text}")
+                await message.answer(f"Результат:\n\n{text}")
         else:
             conn.commit()
-            await message.answer("✅ Запрос выполнен.")
+            await message.answer("Запрос выполнен.")
         conn.close()
     except Exception as e:
-        await message.answer(f"❌ Ошибка SQL: {e}")
-
-
-async def auto_clear_old_orders():
-    """Удаляем заказы со статусом 'Получен' старше 2 дней."""
-    conn = db_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT id, received_date FROM orders WHERE status=?", (STATUS_RECEIVED,))
-    rows = cur.fetchall()
-    now = datetime.now()
-    removed = 0
-    for oid, rdate in rows:
-        if not rdate:
-            continue
-        try:
-            dt = datetime.strptime(rdate, "%Y-%m-%d %H:%M:%S")
-        except Exception:
-            continue
-        if now - dt > timedelta(days=2):
-            cur.execute("DELETE FROM orders WHERE id=?", (oid,))
-            removed += 1
-    conn.commit()
-    conn.close()
-    if removed:
-        logging.info(f"🗑 Авто-очистка: удалено {removed} заказ(ов).")
-
-async def periodic_cleanup():
-    # каждые 12 часов
-    while True:
-        try:
-            await auto_clear_old_orders()
-        except Exception as e:
-            logging.exception(f"Ошибка авто-очистки: {e}")
-        await asyncio.sleep(12 * 60 * 60)
-
-async def on_startup(dp: Dispatcher):
-    await auto_clear_old_orders()
-    asyncio.create_task(periodic_cleanup())
-
+        await message.answer(f"Ошибка SQL: {e}")
 
 if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
+    executor.start_polling(dp, skip_updates=True)
